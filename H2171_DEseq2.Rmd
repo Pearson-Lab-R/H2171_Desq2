@@ -1,0 +1,245 @@
+---
+title: "H2171_Deseq2"
+author: "Nivitha Bhaskar"
+date: "2025-06-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## RNA-seq pipeline - NB
+
+Load all the required libraries before starting the analysis
+
+```{r loading libraries include=FALSE}
+library(dplyr)
+library(data.table)
+library(DESeq2)
+library(ggplot2)
+library(ggrepel)
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+library(patchwork)
+library(biomaRt)
+```
+
+## 1. Setting working directory and loading files
+create a folder with all the quant.genes.sf files, if you have just the quant.sf files, please convert the ENST (ENSEMBL transcript ids) to ENSG (ENSEMBL gene IDs) using the BioMart package
+
+```{r working directory ,include=FALSE}
+# Define the directory where quant.genes.sf files are stored
+quant_dir <- "H2171_quantfiles/"
+
+# Get the list of quant files
+quant_files <- list.files(path = quant_dir, pattern = "quant.genes.sf", full.names = TRUE)
+
+# Extract sample names (modify if needed)
+sample_names <- gsub(".*/", "", quant_files)  # Remove path
+sample_names <- gsub("\\.quant\\.genes\\.sf", "", sample_names)  # Remove exact file extension
+
+
+# Check sample names
+print(sample_names)
+
+# Initialize an empty list to store count data
+count_list <- list()
+
+# Read each file and extract gene counts
+for (i in seq_along(quant_files)) {
+    data <- fread(quant_files[i], header = TRUE, sep = "\t") %>%
+        dplyr::select(Name, NumReads)  # Keep only gene ID and NumReads
+    colnames(data)[2] <- sample_names[i]  # Rename NumReads column with sample name
+    count_list[[i]] <- data
+}
+
+# Merge all files into a single count matrix by gene Name
+count_data <- Reduce(function(x, y) merge(x, y, by = "Name"), count_list)
+colnames(count_data)[1] <- ""
+count_data[, 2:22] <- lapply(count_data[, 2:22], as.integer)
+head(count_data)
+
+# Save results
+write.csv(count_data, "H2171_seq_genequantsf.csv")
+```
+
+## Preparing CSV file
+
+Make sure you have a metadata in csv format at this point. Also, make sure the rownames of mrtadata matches the column names of the count matrix
+
+```{r Preparing CSV file, echo=FALSE}
+cmatrix<-read.csv("H2171_seq_genequantsf.csv", row.names = 1)
+rownames(cmatrix) <- cmatrix[, 1] 
+cmatrix <- cmatrix[, -1] 
+
+# Inserting metadata, and making treatment conditions as factors
+metadata<- read.csv("H2171_metadata.csv", row.names = 1)
+metadata$Group <- factor(paste(metadata$Drug, metadata$Concentration, sep = "_"))
+metadata$Group <- factor(metadata$Group, levels = c("DMSO_None", 
+                                                    "Corin_IC50", "Corin_IC75", 
+                                                    "Ent_IC50", "Ent_IC75", 
+                                                    "SP_IC50", "SP_IC75"))
+
+```
+
+## creating deseq2 object and DGE analysis
+
+```{r DESEq2, echo=FALSE}
+# Create DESeq2 dataset
+obj<- DESeqDataSetFromMatrix(countData = cmatrix,
+                              colData = metadata,
+                              design = ~ Group)
+
+# Filter low-count genes
+obj <- obj[rowSums(counts(obj )) >= 10, ]
+
+#Setting Reference For DGE Analysis
+deg_full <- DESeq(obj) #runs RLE automatically
+
+res_corin_ic50 <- results(deg_full, contrast = c("Group", "Corin_IC50", "DMSO_None"), alpha = 0.05)
+res_corin_ic75 <- results(deg_full, contrast = c("Group", "Corin_IC75", "DMSO_None"), alpha = 0.05)
+res_ent_ic50 <- results(deg_full, contrast = c("Group", "Ent_IC50", "DMSO_None"), alpha = 0.05)
+res_ent_ic75 <- results(deg_full, contrast = c("Group", "Ent_IC75", "DMSO_None"), alpha = 0.05)
+res_sp_ic50 <- results(deg_full, contrast = c("Group", "SP_IC50", "DMSO_None"), alpha = 0.05)
+res_sp_ic75 <- results(deg_full, contrast = c("Group", "SP_IC75", "DMSO_None"), alpha = 0.05)
+
+#creating dataframes
+df_corin_ic50<- as.data.frame(res_corin_ic50)
+df_corin_ic75<- as.data.frame(res_corin_ic75)
+df_ent_ic50<- as.data.frame(res_ent_ic50)
+df_ent_ic75<-as.data.frame(res_ent_ic75)
+df_sp_ic50<- as.data.frame(res_sp_ic50)
+df_sp_ic75<- as.data.frame(res_corin_ic75)
+```
+
+# creating a column with gene ID
+
+Below is the function to convert ENSEMBL IDs to Gene ID for all the files simultaneously
+```{r}
+# Define a function to perform the operations
+process_df <- function(df, file_name) {
+  # Remove the version numbers from Ensembl gene IDs
+  rownames(df) <- sub("\\..*", "", rownames(df))
+  
+  # Map Ensembl IDs to gene symbols
+  df$symbol <- mapIds(org.Hs.eg.db, rownames(df), keytype = "ENSEMBL", column = "SYMBOL")
+  
+  # Remove rows with NAs
+  df_clean <- na.omit(df)
+  
+  # Write the cleaned data to a CSV file
+  write.csv(df_clean, file_name)
+}
+
+# Now, apply this function to your data frames
+process_df(df_corin_ic50, "H2171_corin_ic50_final.csv")
+process_df(df_corin_ic75, "H2171_corin_ic75_final.csv")
+process_df(df_ent_ic50, "H2171_ent_ic50_final.csv")
+process_df(df_ent_ic75, "H2171_ent_ic75_final.csv")
+process_df(df_sp_ic50, "H2171_sp_ic50_final.csv")
+process_df(df_sp_ic75, "H2171_sp_ic75_final.csv")
+```
+
+#Viewing pairwise PCA plots
+```{r}
+plot_pca_pairwise <- function(vsd, group1, group2, metadata) {
+  # Subset metadata to include only the two groups being compared
+  metadata_subset <- metadata[metadata$Group %in% c(group1, group2), ]
+  
+  # Subset the VST-transformed data based on selected samples
+  vsd_subset <- vsd[, colnames(vsd) %in% rownames(metadata_subset)]
+  
+  # Generate PCA data
+  pca_data <- plotPCA(vsd_subset, intgroup = c("Drug", "Concentration", "Replicate"), returnData = TRUE)
+
+  # Ensure Drug column is a factor and levels are correct
+  pca_data$Drug <- factor(pca_data$Drug, levels = unique(metadata_subset$Drug))
+
+  # Define colors
+  drug_colors <- c("DMSO" = "yellow", "Corin" = "red", "Ent" = "blue", "SP" = "green")
+
+  # Define shapes
+  concentration_shapes <- c("IC50" = 16, "IC75" = 17, "None" = 15)
+
+  # Convert Concentration to factor
+  pca_data$Concentration <- factor(pca_data$Concentration, levels = names(concentration_shapes))
+
+  # Debugging: Check if color mapping is correct
+  print(unique(pca_data$Drug))  # Ensure expected values are present
+
+  # Generate PCA plot
+  ggplot(pca_data, aes(x = PC1, y = PC2, color = Drug, shape = Concentration, label = Replicate)) +
+    geom_point(size = 4) +
+    geom_text_repel(size = 4, box.padding = 0.5) +
+    labs(title = paste("PCA: ", group1, "vs", group2), x = "PC1", y = "PC2") +
+    theme_classic() +
+    scale_color_manual(values = drug_colors, na.value = "black") +  # Black for unmapped values
+    scale_shape_manual(values = concentration_shapes) +
+    theme(legend.position = "right")
+}
+
+vsd_full <- vst(obj)
+# Example: Generate PCA for DMSO vs Corin_IC50
+a<- plot_pca_pairwise(vsd_full, "DMSO_None", "Corin_IC50", metadata)
+b<- plot_pca_pairwise(vsd_full, "DMSO_None", "Corin_IC75", metadata)
+c<- plot_pca_pairwise(vsd_full,"DMSO_None","Ent_IC50", metadata)
+d<- plot_pca_pairwise(vsd_full,"DMSO_None","Ent_IC75", metadata)
+e<- plot_pca_pairwise(vsd_full,"DMSO_None","SP_IC50", metadata)
+f<- plot_pca_pairwise(vsd_full,"DMSO_None","SP_IC75", metadata)
+
+combined_plot <- a + b + c + d + e + f + 
+  plot_layout(ncol = 2) 
+
+combined_plot
+```
+
+```{r}
+# List of the file names
+file_names <- c("H2171_corin_ic50_final.csv", "H2171_corin_ic75_final.csv", 
+                "H2171_ent_ic50_final.csv", "H2171_ent_ic75_final.csv", 
+                "H2171_sp_ic50_final.csv", "H2171_sp_ic75_final.csv")
+
+# Read all the CSV files into a list of data frames
+df_list <- lapply(file_names, read.csv)
+
+# Optionally, assign names to each element in the list for easy reference
+names(df_list) <- c("H2171_corin_ic50", "H2171_corin_ic75", "H2171_ent_ic50", "H2171_ent_ic75", "H2171_sp_ic50", "H2171_sp_ic75")
+
+# You can access each data frame by its name in the list eg.
+#df_list$H2171_corin_ic50
+```
+
+```{r}
+# Define the volcano plot function
+generate_volcano_plot <- function(df, file_name) {
+  # Ensure the necessary columns (log2FoldChange, padj, symbol) are present in the dataframe
+  df$significance <- ifelse(df$padj < 0.05 & df$log2FoldChange > 1, "Upregulated",
+                            ifelse(df$padj < 0.05 & df$log2FoldChange < -1, "Downregulated", "Not Significant"))
+  
+  # Generate the volcano plot
+  v_plot <- ggplot(df, aes(x = log2FoldChange, y = -log10(padj), color = significance, label = symbol)) +
+    geom_point() +
+    scale_color_manual(values = c("Upregulated" = "red", "Downregulated" = "blue", "Not Significant" = "grey")) +
+    geom_hline(yintercept = -log10(0.05), linetype = "dashed") + 
+    geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+    xlim(-10, 10) +
+    theme_minimal() +
+    labs(title = paste(file_name, "Volcano Plot"), x = "log2(Fold Change)", y = "-log10(Adjusted P-value)", color = "Gene Regulation") +
+    geom_text_repel(data = subset(df, padj < 0.05 & abs(log2FoldChange) > 1), 
+                    aes(label = symbol), size = 3, max.overlaps = 10)
+  
+  # Save the plot as an image (optional)
+  ggsave(paste0(file_name, "_volcano_plot.png"), plot = v_plot)
+  
+  # Return the plot (optional)
+  return(v_plot)
+}
+```
+
+```{r}
+# Apply the function to each dataset
+lapply(names(df_list), function(name) {
+  generate_volcano_plot(df_list[[name]], name)
+})
+```
