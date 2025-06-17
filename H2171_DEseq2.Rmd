@@ -207,7 +207,7 @@ df_list <- lapply(file_names, read.csv)
 names(df_list) <- c("H2171_corin_ic50", "H2171_corin_ic75", "H2171_ent_ic50", "H2171_ent_ic75", "H2171_sp_ic50", "H2171_sp_ic75")
 
 # You can access each data frame by its name in the list eg.
-#df_list$H2171_corin_ic50
+df_list$H2171_corin_ic50
 ```
 
 ```{r}
