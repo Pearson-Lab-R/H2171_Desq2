@@ -1,0 +1,382 @@
+---
+title: "H2171_GSEA_GO"
+author: "Nivitha Bhaskar"
+date: "2025-06-03"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Use the DESEq2 output files to perform the GSEA analysis
+
+#Loading necessary packages
+```{r libraries}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(dplyr)
+library(AnnotationDbi)
+library(ggplot2)
+library(enrichplot)
+library(GO.db)
+library(GOplot)
+library(enrichplot)
+library(KEGGREST)
+library(ggrepel)
+library(gridExtra)
+library(stringr)
+library(tidyr)
+```
+
+# loading differential gene exp results
+```{r}
+# List of the file names
+file_names <- c("H2171_corin_ic50_final.csv", "H2171_corin_ic75_final.csv", 
+                "H2171_ent_ic50_final.csv", "H2171_ent_ic75_final.csv", 
+                "H2171_sp_ic50_final.csv", "H2171_sp_ic75_final.csv")
+
+# Read all the CSV files into a list of data frames
+df_list <- lapply(file_names, read.csv)
+
+# Optionally, assign names to each element in the list for easy reference
+names(df_list) <- c("H2171_corin_ic50", "H2171_corin_ic75", "H2171_ent_ic50", "H2171_ent_ic75", "H2171_sp_ic50", "H2171_sp_ic75")
+```
+
+# GSEA function
+Function converts ENSEMBL to ENTREIZ ids, then runs both GO and KEGG
+
+```{r}
+run_gsea_ensembl <- function(df) {
+  # Clean ENSEMBL IDs just in case there are version suffixes
+  ens_ids <- gsub("\\..*", "", as.character(df$X))
+
+  # Map to ENTREZ IDs
+  df$entrez <- mapIds(org.Hs.eg.db,
+                      keys = ens_ids,
+                      column = "ENTREZID",
+                      keytype = "ENSEMBL",
+                      multiVals = "first")
+
+  # Extract gene list (e.g., log2FoldChange or stat)
+  gene_list <- df[, 3]
+  names(gene_list) <- as.character(df$entrez)
+
+  # Clean gene list
+  gene_list <- sort(gene_list, decreasing = TRUE)
+  gene_list <- gene_list[!duplicated(names(gene_list))]
+  gene_list <- gene_list[!is.na(names(gene_list))]
+
+  # Run gseGO
+  gse_go <- gseGO(geneList = gene_list,
+                      OrgDb = org.Hs.eg.db,
+                      ont = "BP",
+                      minGSSize = 100,
+                      maxGSSize = 500,
+                      pvalueCutoff = 0.05,
+                      verbose = FALSE)
+   # Run gseKEGG
+  gse_kegg <- gseKEGG(geneList = gene_list,
+                      organism = "hsa",
+                      minGSSize = 10,
+                      maxGSSize = 500,
+                      pvalueCutoff = 0.05,
+                      verbose = FALSE)
+
+  # Return both results as a list
+  return(list(GO = gse_go, KEGG = gse_kegg))
+
+}
+
+# Apply to all datasets
+gsea_results <- lapply(df_list, run_gsea_ensembl)
+names(gsea_results) <- names(df_list)
+```
+
+# Visualizing GSEA as dotplots
+will be saved as separate pdf
+
+
+```{r}
+pdf("GSEA_2171_RNAseq.pdf", width = 10, height = 8)
+
+for (name in names(gsea_results)) {
+  # Plot GO results
+  p1<-(dotplot(gsea_results[[name]]$GO,
+                showCategory = 20,
+                title = paste("Top 20 Enriched GO Terms in", name)))
+  print(p1)
+
+  # Plot KEGG results
+  p2<-(dotplot(gsea_results[[name]]$KEGG,
+                showCategory = 20,
+                title = paste("Top 20 Enriched KEGG Pathways in", name)))
+  print(p2)
+}
+
+dev.off()
+```
+
+# Viewing results as Gsea plots
+```{r}
+# Define conditions
+conditions <- c("H2171_corin_ic50", "H2171_corin_ic75", "H2171_ent_ic50", 
+                "H2171_ent_ic75", "H2171_sp_ic50", "H2171_sp_ic75")
+
+# Initialize list to collect plots
+plot_list <- list()
+
+# Loop through each condition
+for (cond in conditions) {
+  
+  # Access the GSEA KEGG result
+  gsea_res <- gsea_results[[cond]]$KEGG
+  
+  # Skip if KEGG results are missing
+  if (is.null(gsea_res) || nrow(as.data.frame(gsea_res)) == 0) {
+    cat("Skipping:", cond, "- no KEGG data\n")
+    next
+  }
+  
+  # Filter significant pathways (adjusted p < 0.05)
+  filtered_result <- gsea_res@result %>%
+    filter(p.adjust < 0.05)
+  
+  if (nrow(filtered_result) == 0) {
+    cat("Skipping:", cond, "- no significant KEGG terms (padj < 0.05)\n")
+    next
+  }
+  
+  # Select top 10 significant pathways
+  top_pathways <- filtered_result %>%
+    arrange(p.adjust) %>%
+    slice_head(n = 10) %>%
+    pull(ID)
+  
+  # Plot the top 10 pathways
+  p <- gseaplot2(gsea_res, 
+                 geneSetID = top_pathways, 
+                 title = paste("Top 10 Significant KEGG Pathways -", cond),
+                 base_size = 12)
+  
+  # Add to list
+  plot_list[[cond]] <- p
+}
+
+# Combine all plots into one PDF file
+pdf("H2171_GSEA_KEGG_Significant_Top10.pdf", width = 17, height = 12)
+for (p in plot_list) {
+  print(p)
+}
+dev.off()
+
+cat("✅ Significant KEGG GSEA plots saved to 'H2171_GSEA_KEGG_Significant_Top10.pdf'\n")
+```
+
+# for negatively significant
+```{r}
+
+# Define conditions
+conditions <- c("H2171_corin_ic50", "H2171_corin_ic75", "H2171_ent_ic50", 
+                "H2171_ent_ic75", "H2171_sp_ic50", "H2171_sp_ic75")
+
+# Initialize list to store plots
+plot_list <- list()
+
+# Loop through each condition
+for (cond in conditions) {
+  
+  gsea_res <- gsea_results[[cond]]$KEGG
+  
+  if (is.null(gsea_res) || nrow(gsea_res@result) == 0) {
+    warning(paste("No valid KEGG result for:", cond, "- skipping."))
+    next
+  }
+
+  # Filter for negatively enriched pathways
+  neg_enriched <- gsea_res@result %>%
+    filter(NES < -1, p.adjust < 0.05) %>%
+    arrange(p.adjust) %>%
+    slice_head(n = 10)
+  
+  if (nrow(neg_enriched) == 0) {
+    warning(paste("No negatively enriched pathways in", cond))
+    next
+  }
+
+  top_neg_pathways <- neg_enriched$ID
+
+  # Generate plot
+  p <- gseaplot2(gsea_res, 
+                 geneSetID = top_neg_pathways, 
+                 title = paste("Top Negatively Enriched KEGG Pathways -", cond),
+                 base_size = 11) 
+  
+  # Store in list
+  plot_list[[cond]] <- p
+}
+
+# Save all plots into a single PDF file
+pdf("All_Neg_Enriched_KEGG_GSEA_Plots.pdf", width = 17, height = 12)
+for (p in plot_list) {
+  print(p)
+}
+dev.off()
+
+```
+
+# Digging deeper into the enriched genes
+After looking at the gseaplots, found hematopoetic  biosynthesis pathway to be 
+strongly negatively enriched, therefore looking at the specific genes
+
+```{r}
+# Get gene information for pathway hsa00900 
+kegg_genes <- keggGet("hsa04640")[[1]]$GENE
+
+# The list includes Entrez ID and gene description, alternating
+gene_ids <- kegg_genes[seq(1, length(kegg_genes), 2)]  # Get only the Entrez IDs
+
+# Convert Entrez IDs to gene symbols
+gene_symbols <- bitr(gene_ids, fromType = "ENTREZID",
+                     toType = "SYMBOL", OrgDb = org.Hs.eg.db)
+
+# View the gene symbols
+print(gene_symbols)
+
+
+# Your list of gene symbols from the KEGG pathway
+hema_genes <- gene_symbols$SYMBOL
+
+# Subset DESeq2 results
+# Subset each dataset for terpenoid pathway genes
+hema_subsets <- lapply(df_list, function(df) {
+  df[df$symbol %in% hema_genes, ]
+})
+
+# Custom volcano function using your styling
+make_custom_volcano <- function(df, dataset_name) {
+  # Add required columns
+  df$log2fc <- df$log2FoldChange
+  df$pval <- df$padj
+  df$delabel <- df$symbol
+  
+  # Classify for coloring
+  df$diffexpressed <- "Not significant"
+  df$diffexpressed[df$log2fc > 1 & df$padj < 0.05] <- "Upregulated"
+  df$diffexpressed[df$log2fc < -1 & df$padj < 0.05] <- "Downregulated"
+  
+  # Plot
+  ggplot(data = df, aes(x = log2fc, y = -log10(pval), col = diffexpressed, label = delabel)) +
+    geom_vline(xintercept = c(-0.6, 0.6), col = "gray", linetype = 'dashed') +
+    geom_hline(yintercept = -log10(0.05), col = "gray", linetype = 'dashed') +
+    geom_point(size = 2) +
+    scale_color_manual(
+      values = c("Downregulated" = "#00AFBB", "Not significant" = "grey", "Upregulated" = "#bb0c00"),
+      labels = c("Downregulated", "Not significant", "Upregulated")
+    ) +
+    coord_cartesian(ylim = c(0, 25), xlim = c(-7, 7)) +
+    labs(
+      color = 'Expression',
+      x = expression("log"[2]*"FC"),
+      y = expression("-log"[10]*"adjusted p-value")
+    ) +
+    scale_x_continuous(breaks = seq(-10, 10, 2)) +
+    ggtitle(paste("Hematopoietic cell lineage -", dataset_name)) +
+    geom_text_repel(max.overlaps = Inf, size = 2)+
+    theme_classic()
+}
+
+# Apply to each dataset in terpenoid_subsets
+custom_hema_plots <- mapply(
+  FUN = make_custom_volcano,
+  df = hema_subsets,
+  dataset_name = names(hema_subsets),
+  SIMPLIFY = FALSE
+)
+
+
+# Or use gridExtra to show multiple
+grid.arrange(grobs = custom_hema_plots[1:6], ncol = 2)  # change range/ncol as needed
+```
+
+# Visualizing circular plots
+
+First extracting the go results
+```{r}
+# Define output PDF
+pdf("H2171_GOChord_plots.pdf", width = 20, height = 20)
+
+# Loop through each element of gsea_results
+for (s in names(gsea_results)) {
+  cat("Processing:", s, "\n")
+
+  # STEP 1: Extract and clean GSEA result
+  gsea_df <- as.data.frame(gsea_results[[s]]$GO)
+
+  # STEP 2: Sort by NES
+  gsea_df <- gsea_df %>%
+    arrange(desc(NES))
+
+  # STEP 3: Select and format key columns
+  filtered_df <- gsea_df %>%
+    select(ID, Term = Description, adj_pval = p.adjust, core_enrichment) %>%
+    mutate(Category = "BP") %>%
+    relocate(Category)
+
+  # STEP 4: Map ENTREZ IDs to SYMBOLs
+  filtered_df$Genes <- str_split(filtered_df$core_enrichment, "/")
+  all_entrez <- unique(unlist(filtered_df$Genes))
+  entrez2symbol <- bitr(all_entrez, fromType = "ENTREZID", toType = "SYMBOL", OrgDb = org.Hs.eg.db)
+  entrez_map <- setNames(entrez2symbol$SYMBOL, entrez2symbol$ENTREZID)
+
+  filtered_df$Genes <- lapply(filtered_df$Genes, function(g) {
+    gene_symbols <- entrez_map[g]
+    gene_symbols <- gene_symbols[!is.na(gene_symbols)]
+    paste(gene_symbols, collapse = ", ")
+  })
+
+  final_df <- filtered_df %>%
+    select(Category, ID, Term, Genes, adj_pval)
+  
+   #  STEP 7: Extract DE data
+de_df <- df_list[[s]] %>%
+  filter(!is.na(symbol)) %>%
+  select(ID = symbol, logFC = log2FoldChange) %>%
+  distinct(ID, .keep_all = TRUE)
+
+  
+
+  # STEP 5: Circle data
+  circ <- circle_dat(final_df, de_df)
+
+  # STEP 6: Top terms and genes
+  top_terms <- final_df %>%
+    slice(1:5) %>%
+    pull(Term)
+
+  top_genes <- final_df %>%
+    slice(1:5) %>%
+    pull(Genes) %>%
+    str_split(",\\s*") %>%
+    unlist() %>%
+    unique()
+
+ filtered_de_df <- de_df %>%
+    filter(ID %in% top_genes)
+
+  # STEP 8: Chord plot
+  chord <- chord_dat(circ, filtered_de_df, top_terms)
+
+  # STEP 9: Plot with title
+  print(
+  GOChord(chord,
+          limit = c(3, 0),
+          gene.order = "logFC",
+          title = paste("GOChord Plot -", s))
+)
+}
+
+# Close PDF
+dev.off()
+```
+
