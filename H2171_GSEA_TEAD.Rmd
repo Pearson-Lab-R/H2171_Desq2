@@ -1,0 +1,465 @@
+---
+title: "H2171_GSEA_TEAD"
+author: "Nivitha Bhaskar"
+date: "2025-05-29"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r Loading_libraries}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(dplyr)
+library(AnnotationDbi)
+library(ggplot2)
+library(enrichplot)
+library(GO.db)
+library(GOplot)
+library(enrichplot)
+library(tidyverse)
+library(ggvenn)
+library(pheatmap)
+```
+
+# GSEA with custom TEAD gene set
+```{r}
+# Load and clean the custom new gene sets
+tead_new <- read.csv("common_TEAD_genes_H2171.csv")
+
+custom_gene_set_new <- list("TEAD_repressed" = tead_new$TEAD_repressed)
+custom_induced_new <- list("TEAD_induced" = tead_new$TEAD_induced)
+
+# Clean out any empty strings
+custom_gene_set_new <- lapply(custom_gene_set_new, function(x) x[x != ""])
+custom_induced_new <- lapply(custom_induced_new, function(x) x[x != ""])
+
+# Convert to TERM2GENE format
+term2gene_repressed_new <- stack(custom_gene_set_new)
+colnames(term2gene_repressed_new) <- c("gene", "term")
+term2gene_repressed_new <- term2gene_repressed_new[, c("term", "gene")]
+
+term2gene_induced_new <- stack(custom_induced_new)
+colnames(term2gene_induced_new) <- c("gene", "term")
+term2gene_induced_new <- term2gene_induced_new[, c("term", "gene")]
+
+```
+
+# Loading differential analysis results
+```{r}
+# List of the file names
+file_names <- c("H2171_corin_ic50_final.csv", "H2171_corin_ic75_final.csv", 
+                "H2171_ent_ic50_final.csv", "H2171_ent_ic75_final.csv", 
+                "H2171_sp_ic50_final.csv", "H2171_sp_ic75_final.csv")
+
+# Read all the CSV files into a list of data frames
+df_list <- lapply(file_names, read.csv)
+
+# Optionally, assign names to each element in the list for easy reference
+names(df_list) <- c("H2171_corin_ic50", "H2171_corin_ic75", "H2171_ent_ic50", "H2171_ent_ic75", "H2171_sp_ic50", "H2171_sp_ic75")
+
+# You can access each data frame by its name in the list eg.
+df_list$H2171_corin_ic50
+```
+
+# custom GSEA function to loop through all the datasets
+```{r}
+run_custom_gsea_new <- function(df) {
+  # Use gene symbols directly from the last column
+  gene_symbols <- as.character(df[[ncol(df)]])
+  gene_list <- df[[3]]  # assuming logFC or stat is in column 3
+  names(gene_list) <- gene_symbols
+
+  # Clean gene list
+  gene_list <- sort(gene_list, decreasing = TRUE)
+  gene_list <- gene_list[!duplicated(names(gene_list))]
+  gene_list <- gene_list[!is.na(names(gene_list))]
+
+  # Run GSEA for both repressed and induced gene sets
+  gsea_repressed <- tryCatch({
+    GSEA(geneList = gene_list, TERM2GENE = term2gene_repressed_new, pvalueCutoff = 0.05)
+  }, error = function(e) NULL)
+
+  gsea_induced <- tryCatch({
+    GSEA(geneList = gene_list, TERM2GENE = term2gene_induced_new, pvalueCutoff = 0.05)
+  }, error = function(e) NULL)
+
+  return(list(repressed = gsea_repressed, induced = gsea_induced))
+}
+
+gsea_custom_results_new <- lapply(df_list, run_custom_gsea_new)
+names(gsea_custom_results_new) <- names(df_list)
+```
+
+```{r}
+pdf("H2171_GSEA_TEAD.pdf", width = 20, height = 20)
+
+# Loop through each dataset
+for (name in names(gsea_custom_results_new)) {
+  res_list <- gsea_custom_results_new[[name]]
+
+  # Plot TEAD_repressed
+  if (!is.null(res_list$repressed) && nrow(res_list$repressed@result) > 0) {
+    plot_r <- gseaplot(res_list$repressed, geneSetID = 1, title = paste(name, "TEAD_repressed"))
+    print(plot_r)  # Ensure it goes into the PDF
+  }
+
+  # Plot TEAD_induced
+  if (!is.null(res_list$induced) && nrow(res_list$induced@result) > 0) {
+    plot_i <- gseaplot(res_list$induced, geneSetID = 1, title = paste(name, "TEAD_induced"))
+    print(plot_i)  # Ensure it goes into the PDF
+  }
+}
+
+dev.off()
+
+```
+
+# summarising the result
+
+```{r}
+# Create an empty list to store results
+summary_list_new <- list()
+
+# Loop through each dataset and extract info
+for (name in names(gsea_custom_results_new)) {
+  res_list <- gsea_custom_results_new[[name]]
+  
+  # Repressed results
+  if (!is.null(res_list$repressed) && nrow(res_list$repressed@result) > 0) {
+    top_repressed <- res_list$repressed@result[1, c("ID", "NES", "p.adjust")]
+    top_repressed$Dataset <- name
+    top_repressed$Type <- "TEAD_repressed"
+    summary_list_new[[paste0(name, "_repressed")]] <- top_repressed
+  }
+  
+  # Induced results
+  if (!is.null(res_list$induced) && nrow(res_list$induced@result) > 0) {
+    top_induced <- res_list$induced@result[1, c("ID", "NES", "p.adjust")]
+    top_induced$Dataset <- name
+    top_induced$Type <- "TEAD_induced"
+    summary_list_new[[paste0(name, "_induced")]] <- top_induced
+  }
+}
+
+# Combine into one data frame
+summary_df_new <- do.call(rbind, summary_list_new)
+
+# Reorder columns for clarity
+summary_df_new <- summary_df_new[, c("Dataset", "Type", "ID", "NES", "p.adjust")]
+
+# View the table
+print(summary_df_new)
+```
+
+# extracting the leading edge genes contributing to custom GSEA
+
+```{r}
+# Create a list to store leading edge genes
+leading_edge_genes_list <- list()
+
+for (name in names(gsea_custom_results_new)) {
+  res_list <- gsea_custom_results_new[[name]]
+  
+  # Repressed
+  if (!is.null(res_list$repressed) && nrow(res_list$repressed@result) > 0) {
+    genes <- strsplit(res_list$repressed@result$core_enrichment, "/")[[1]]
+    leading_edge_genes_list[[paste0(name, "_repressed")]] <- genes
+  }
+
+  # Induced
+  if (!is.null(res_list$induced) && nrow(res_list$induced@result) > 0) {
+    genes <- strsplit(res_list$induced@result$core_enrichment, "/")[[1]]
+    leading_edge_genes_list[[paste0(name, "_induced")]] <- genes
+  }
+}
+
+# Check one of them
+leading_edge_genes_list$H2171_corin_ic50_repressed
+```
+
+# Over-representational analysis in R - not trimmed
+```{r}
+# Convert gene symbols to Entrez IDs
+convert_to_entrez <- function(genes) {
+  bitr(genes, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)$ENTREZID
+}
+
+# Store ORA results
+ora_results_list <- list()
+
+# Loop through each leading edge gene set
+for (name in names(leading_edge_genes_list)) {
+  genes <- leading_edge_genes_list[[name]]
+  entrez_genes <- convert_to_entrez(genes)
+
+  if (length(entrez_genes) > 5) {  # Need a few genes for enrichment
+    # KEGG pathway enrichment
+    enrich_res <- enrichKEGG(gene = entrez_genes,
+                             organism = 'hsa',
+                             pAdjustMethod = "BH",
+                             pvalueCutoff = 0.05)
+    ora_results_list[[name]] <- enrich_res
+  }
+}
+```
+# Viewing over-represented pathways - not trimmed
+```{r}
+
+# Combine enrichResult objects into a clean summary table
+ora_summary <- do.call(rbind, lapply(names(ora_results_list), function(name) {
+  enrich_res <- ora_results_list[[name]]
+  
+  if (!is.null(enrich_res) && nrow(as.data.frame(enrich_res)) > 0) {
+    df <- as.data.frame(enrich_res)
+    df$Condition <- name  # Add condition label
+    # Some enrichResult objects may not have zScore; add NA if missing
+    if (!"zScore" %in% colnames(df)) df$zScore <- NA
+    return(df[, c("Condition", "ID", "Description", "p.adjust", "zScore")])
+  }
+  return(NULL)
+}))
+
+# View the table
+head(ora_summary)
+
+# Ensure zScore and p.adjust are numeric
+ora_summary$zScore <- as.numeric(ora_summary$zScore)
+ora_summary$negLogPadj <- -log10(ora_summary$p.adjust)
+
+# Bubble plot
+ggplot(ora_summary, aes(x = Condition, y = Description)) +
+  geom_point(aes(size = zScore, color = negLogPadj)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme_bw() +
+  theme(axis.text.y = element_text(size = 10)) +
+  labs(title = "Enriched Pathways by Condition",
+       x = "Condition",
+       y = "Pathway",
+       color = "-log10(p.adjust)",
+       size = "zScore")
+```
+
+# Running the custom gsea with trimmed top 3000 and bottom 3000 genes
+```{r}
+run_custom_gsea_trimmed <- function(df) {
+  # Step 1: Extract gene symbols and ranking metric
+  gene_symbols <- as.character(df[[ncol(df)]])
+  gene_stat <- sign(df[[3]]) * -log10(df[[7]])  # assuming logFC or stat is in column 3
+  
+  # Step 2: Combine and sort
+  gene_df <- data.frame(symbol = gene_symbols, stat = gene_stat)
+  gene_df <- gene_df[!duplicated(gene_df$symbol) & !is.na(gene_df$symbol), ]
+  gene_df <- gene_df[order(gene_df$stat, decreasing = TRUE), ]
+  
+  # Step 3: Keep top 200 and bottom 200 genes
+  trimmed_df <- rbind(
+    head(gene_df, 2000),
+    tail(gene_df, 2000)
+  )
+  
+  
+  # Step 4: Create named vector for GSEA
+  gene_list_trimmed <- trimmed_df$stat
+  names(gene_list_trimmed) <- trimmed_df$symbol
+  
+  # Step 5: Run GSEA for both repressed and induced gene sets
+  gsea_repressed <- tryCatch({
+    GSEA(geneList = sort(gene_list_trimmed, decreasing = TRUE), 
+         TERM2GENE = term2gene_repressed_new, pvalueCutoff = 0.05)
+  }, error = function(e) NULL)
+  
+  gsea_induced <- tryCatch({
+    GSEA(geneList = sort(gene_list_trimmed, decreasing = TRUE), 
+         TERM2GENE = term2gene_induced_new, pvalueCutoff = 0.05)
+  }, error = function(e) NULL)
+  
+  return(list(repressed = gsea_repressed, induced = gsea_induced))
+}
+
+gsea_trimmed_results_H2171 <- lapply(df_list, run_custom_gsea_trimmed)
+names(gsea_trimmed_results_H2171) <- names(df_list)
+```
+
+```{r}
+pdf("H2171_GSEA_TEADtrimmed.pdf", width = 20, height = 20)
+
+# Loop through each dataset
+for (name in names(gsea_trimmed_results_H2171)) {
+  res_list <- gsea_trimmed_results_H2171[[name]]
+
+  # Save TEAD_repressed plot
+  if (!is.null(res_list$repressed) && nrow(res_list$repressed@result) > 0) {
+    plot_r <- gseaplot(res_list$repressed, geneSetID = 1, title = paste(name, "TEAD_repressed"))
+    print(plot_r)
+  }
+
+  # Save TEAD_induced plot
+  if (!is.null(res_list$induced) && nrow(res_list$induced@result) > 0) {
+    plot_i <- gseaplot(res_list$induced, geneSetID = 1, title = paste(name, "TEAD_induced"))
+    print(plot_i)
+  }
+}
+```
+
+# Summary of trimmed result
+```{r}
+# Create an empty list to store results
+summary_trimmed_H2171 <- list()
+
+# Loop through each dataset and extract info
+for (name in names(gsea_trimmed_results_H2171)) {
+  res_list <- gsea_trimmed_results_H2171[[name]]
+  
+  # Repressed results
+  if (!is.null(res_list$repressed) && nrow(res_list$repressed@result) > 0) {
+    top_repressed <- res_list$repressed@result[1, c("ID", "NES", "p.adjust")]
+    top_repressed$Dataset <- name
+    top_repressed$Type <- "TEAD_repressed"
+    summary_trimmed_H2171[[paste0(name, "_repressed")]] <- top_repressed
+  }
+  
+  # Induced results
+  if (!is.null(res_list$induced) && nrow(res_list$induced@result) > 0) {
+    top_induced <- res_list$induced@result[1, c("ID", "NES", "p.adjust")]
+    top_induced$Dataset <- name
+    top_induced$Type <- "TEAD_induced"
+    summary_trimmed_H2171[[paste0(name, "_induced")]] <- top_induced
+  }
+}
+
+# Combine into one data frame
+summary_dftrim_H2171 <- do.call(rbind, summary_trimmed_H2171)
+
+# Reorder columns for clarity
+summary_dftrim_H2171 <- summary_dftrim_H2171[, c("Dataset", "Type", "ID", "NES", "p.adjust")]
+
+# View the table
+print(summary_dftrim_H2171)
+```
+
+# Barplot of the NES scores
+```{r}
+# Your data (assuming already loaded into df_trim)
+# Add significance stars
+df_trim <- summary_dftrim_H2171 %>%
+  mutate(Significance = case_when(
+    p.adjust < 0.001 ~ "***",
+    p.adjust < 0.01 ~ "**",
+    p.adjust < 0.05 ~ "*",
+    TRUE ~ ""
+  ))
+
+# Create the bar plot
+ggplot(df_trim, aes(x = reorder(Dataset, NES), y = NES, fill = Type)) +
+  geom_col(width = 0.7, position = position_dodge()) +
+  geom_text(aes(label = Significance),
+            vjust = ifelse(df_trim$NES > 0, -0.5, 1.2),
+            size = 4) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "black") +
+  coord_flip() +
+  scale_fill_manual(values = c("TEAD_repressed" = "#1b9e77", "TEAD_induced" = "#d95f02")) +
+  labs(title = "GSEA Normalized Enrichment Scores (NES)",
+       x = "Condition",
+       y = "NES",
+       fill = "Gene Set") +
+  theme_light() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.y = element_text(size = 10)
+  )
+```
+
+# Analysing the leading genes contributing to this enrichment
+
+```{r}
+# Create a list to store leading edge genes
+leading_edge_genes_list_t <- list()
+
+for (name in names(gsea_trimmed_results_H2171)) {
+  res_list <- gsea_trimmed_results_H2171[[name]]
+  
+  # Repressed
+  if (!is.null(res_list$repressed) && nrow(res_list$repressed@result) > 0) {
+    genes <- strsplit(res_list$repressed@result$core_enrichment, "/")[[1]]
+    leading_edge_genes_list_t[[paste0(name, "_repressed")]] <- genes
+  }
+
+  # Induced
+  if (!is.null(res_list$induced) && nrow(res_list$induced@result) > 0) {
+    genes <- strsplit(res_list$induced@result$core_enrichment, "/")[[1]]
+    leading_edge_genes_list_t[[paste0(name, "_induced")]] <- genes
+  }
+}
+
+# Check one of them
+leading_edge_genes_list_t$H2171_corin_ic50_repressed
+```
+
+# Pathway over-representation analysis (ORA) with leading edge genes
+
+```{r}
+# Convert gene symbols to Entrez IDs
+convert_to_entrez <- function(genes) {
+  bitr(genes, fromType = "SYMBOL", toType = "ENTREZID", OrgDb = org.Hs.eg.db)$ENTREZID
+}
+
+# Store ORA results
+ora_results_list_t <- list()
+
+# Loop through each leading edge gene set
+for (name in names(leading_edge_genes_list_t)) {
+  genes <- leading_edge_genes_list_t[[name]]
+  entrez_genes <- convert_to_entrez(genes)
+
+  if (length(entrez_genes) > 5) {  # Need a few genes for enrichment
+    # KEGG pathway enrichment
+    enrich_res <- enrichKEGG(gene = entrez_genes,
+                             organism = 'hsa',
+                             pAdjustMethod = "BH",
+                             pvalueCutoff = 0.05)
+    ora_results_list_t[[name]] <- enrich_res
+  }
+}
+```
+
+# Viewing over-represented pathways
+```{r}
+
+# Combine enrichResult objects into a clean summary table
+ora_summary <- do.call(rbind, lapply(names(ora_results_list_t), function(name) {
+  enrich_res <- ora_results_list_t[[name]]
+  
+  if (!is.null(enrich_res) && nrow(as.data.frame(enrich_res)) > 0) {
+    df <- as.data.frame(enrich_res)
+    df$Condition <- name  # Add condition label
+    # Some enrichResult objects may not have zScore; add NA if missing
+    if (!"zScore" %in% colnames(df)) df$zScore <- NA
+    return(df[, c("Condition", "ID", "Description", "p.adjust", "zScore")])
+  }
+  return(NULL)
+}))
+
+# View the table
+head(ora_summary)
+
+# Ensure zScore and p.adjust are numeric
+ora_summary$zScore <- as.numeric(ora_summary$zScore)
+ora_summary$negLogPadj <- -log10(ora_summary$p.adjust)
+
+
+ggplot(ora_summary, aes(x = Condition, y = Description)) +
+  geom_point(aes(size = zScore, color = negLogPadj)) +
+  scale_color_gradient(low = "blue", high = "red") +
+  theme_light() +
+  theme(axis.text.y = element_text(size = 10)) +
+  labs(title = "Enriched Pathways by Condition",
+       x = "Condition",
+       y = "Pathway",
+       color = "-log10(p.adjust)",
+       size = "zScore")
+
+```
