@@ -1,0 +1,181 @@
+---
+title: "H2171_kd_vs_inhibitor"
+author: "Nivitha Bhaskar"
+date: "2025-06-18"
+output: html_document
+---
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+```{r cars}
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(dplyr)
+library(AnnotationDbi)
+library(ggplot2)
+library(enrichplot)
+library(GO.db)
+library(GOplot)
+library(enrichplot)
+library(RColorBrewer)
+```
+
+#Loading TEAD knockout datasets
+```{r}
+tead1i<- read.csv("df_teadi1_H2171.csv")
+tead2i<- read.csv("df_teadi2_H2171.csv")
+```
+
+#Extract log2FC for TEAD panel genes from drug-treated DE files
+```{r}
+# 1. Read custom TEAD panel
+tead_new <- read.csv("common_TEAD_genes_H2171.csv")
+tead_panel_genes <- unique(c(tead_new$TEAD_repressed, tead_new$TEAD_induced))
+tead_panel_genes <- na.omit(trimws(tead_panel_genes))  # clean spaces and NA
+
+# 2. Read drug-treated DE data
+data_dir <- "H2171_DE_results/"
+csv_files <- list.files(path = data_dir, pattern = "\\.csv$", full.names = TRUE)
+data_list <- lapply(csv_files, read.csv)
+names(data_list) <- tools::file_path_sans_ext(basename(csv_files))
+
+# 3. Function to extract gene + log2FC
+extract_tead_log2fc <- function(df, gene_list) {
+  df_filtered <- df[df$symbol %in% gene_list, c("symbol", "log2FoldChange")]
+  colnames(df_filtered) <- c("gene", "log2FoldChange")
+  df_filtered <- df_filtered[!duplicated(df_filtered$gene), ]  # remove duplicates
+  return(df_filtered)
+}
+
+# 4. Extract TEAD panel genes from each DE file
+drug_tead_log2fc <- lapply(data_list, extract_tead_log2fc, gene_list = tead_panel_genes)
+
+# 5. Merge into one dataframe
+for_heatmap_drug <- Reduce(function(x, y) full_join(x, y, by = "gene"), drug_tead_log2fc)
+colnames(for_heatmap_drug) <- c("gene", names(data_list))
+for_heatmap_drug[is.na(for_heatmap_drug)] <- 0
+
+# 6. Reorder to match TEAD panel order
+ordered_tead_panel <- tead_panel_genes[tead_panel_genes %in% for_heatmap_drug$gene]
+for_heatmap_drug <- for_heatmap_drug[match(ordered_tead_panel, for_heatmap_drug$gene), ]
+
+# 7. Prepare matrix for heatmap
+heatmap_matrix <- as.matrix(for_heatmap_drug[,-1])
+rownames(heatmap_matrix) <- for_heatmap_drug$gene
+
+# Extract log2FCs - tead knockout
+tead1_df <- extract_tead_log2fc(tead1i, tead_panel_genes)
+tead2_df <- extract_tead_log2fc(tead2i, tead_panel_genes)
+
+# Combine
+knockdown_combined <- full_join(tead1_df, tead2_df, by = "gene")
+colnames(knockdown_combined) <- c("gene", "TEAD1_KD", "TEAD2_KD")
+knockdown_combined[is.na(knockdown_combined)] <- 0
+
+# Reorder according to TEAD panel
+ordered_tead_panel <- tead_panel_genes[tead_panel_genes %in% knockdown_combined$gene]
+knockdown_combined <- knockdown_combined[match(ordered_tead_panel, knockdown_combined$gene), ]
+
+# === 8. Keep only genes present in both datasets ===
+common_genes <- intersect(for_heatmap_drug$gene, knockdown_combined$gene)
+
+# Filter both datasets to common genes
+for_heatmap_drug <- for_heatmap_drug[for_heatmap_drug$gene %in% common_genes, ]
+knockdown_combined <- knockdown_combined[knockdown_combined$gene %in% common_genes, ]
+
+# Reorder to match TEAD panel gene order
+ordered_tead_panel <- tead_panel_genes[tead_panel_genes %in% common_genes]
+for_heatmap_drug <- for_heatmap_drug[match(ordered_tead_panel, for_heatmap_drug$gene), ]
+knockdown_combined <- knockdown_combined[match(ordered_tead_panel, knockdown_combined$gene), ]
+
+# === 9. Combine into one matrix for heatmap ===
+final_matrix <- cbind(
+  for_heatmap_drug[,-1],      # drug columns
+  knockdown_combined[,-1]     # TEAD knockdown columns
+)
+rownames(final_matrix) <- for_heatmap_drug$gene  # shared gene list
+
+# Define color scale and breaks
+my_palette <- colorRampPalette(c("blue", "white", "red"))(100)
+breaks_list <- seq(-5, 5, length.out = 101)  # 100 breaks between -5 and +5
+
+# Draw heatmap with capped color range
+pheatmap(
+  final_matrix,
+  scale = "none",
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  show_rownames = FALSE,
+  angle_col = 45,
+  color = my_palette,
+  breaks = breaks_list,                    # cap color at log2FC ±5
+  main = "H209-TEAD Panel Expression: Drug-treated vs TEAD Knockdown",
+  cellwidth = 30
+)
+```
+
+# having a eagle's eye view on the DE data
+```{r}
+# Get log2FC for all genes, from each drug
+extract_all_log2fc <- function(df) {
+  df_clean <- df[!duplicated(df$symbol) & !is.na(df$log2FoldChange), c("symbol", "log2FoldChange")]
+  colnames(df_clean) <- c("gene", "log2FoldChange")
+  return(df_clean)
+}
+
+# Apply to all drugs
+all_log2fc_list <- lapply(data_list, extract_all_log2fc)
+
+# Merge all into one matrix
+all_log2fc_merged <- Reduce(function(x, y) full_join(x, y, by = "gene"), all_log2fc_list)
+colnames(all_log2fc_merged) <- c("gene", names(data_list))
+rownames(all_log2fc_merged) <- all_log2fc_merged$gene
+all_log2fc_merged$gene <- NULL
+
+#-------------heatmap
+# Step 1: Cap log2FC to -5 to 5
+log2fc_capped <- pmin(pmax(as.matrix(all_log2fc_merged), -5), 5)
+log2fc_capped <- log2fc_capped[complete.cases(log2fc_capped), ]
+
+# Step 2: Add TEAD annotation
+gene_class <- ifelse(rownames(log2fc_capped) %in% tead_new$TEAD_induced, "TEAD_Induced",
+              ifelse(rownames(log2fc_capped) %in% tead_new$TEAD_repressed, "TEAD_Repressed", "Other"))
+
+annotation_row <- data.frame(TEAD_Status = gene_class)
+rownames(annotation_row) <- rownames(log2fc_capped)  # Ensure matching rownames
+
+# Step 3: Define annotation colors
+ann_colors <- list(
+  TEAD_Status = c(
+    TEAD_Induced = "steelblue",
+    TEAD_Repressed = "darkorange",
+    Other = "#FFFACD"  # light yellow
+  )
+)
+
+# Step 4: Order rows by TEAD group (to group visually)
+order_vec <- order(annotation_row$TEAD_Status)
+log2fc_ordered <- log2fc_capped[order_vec, ]
+annotation_row_ordered <- annotation_row[order_vec, , drop = FALSE]  # drop = FALSE is crucial
+
+# Step 5: Plot heatmap
+pheatmap(
+  log2fc_ordered,
+  show_rownames = FALSE,
+  show_colnames = TRUE,
+  cluster_rows = FALSE,         # no clustering of rows
+  cluster_cols = FALSE,          # keep drug-wise clustering
+  annotation_row = annotation_row_ordered,
+  annotation_colors = ann_colors,
+  color = colorRampPalette(c("blue", "white", "red"))(100),
+  breaks = seq(-6, 6, length.out = 101),
+  main = "Global Log2FC across Drugs with TEAD Annotation",
+  fontsize = 10,
+  cellwidth = 25
+)
+```
