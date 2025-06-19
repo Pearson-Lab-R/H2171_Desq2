@@ -23,6 +23,7 @@ library(AnnotationDbi)
 library(org.Hs.eg.db)
 library(patchwork)
 library(biomaRt)
+library(pheatmap)
 ```
 
 ## 1. Setting working directory and loading files
@@ -242,4 +243,94 @@ generate_volcano_plot <- function(df, file_name) {
 lapply(names(df_list), function(name) {
   generate_volcano_plot(df_list[[name]], name)
 })
+```
+
+#Making heatmap with variance stabilized matrix
+
+```{r}
+vsd_matrix<-assay(vsd_full)
+# === Step 1: Convert to data frame (if needed) ===
+vsd_df <- as.data.frame(vsd_matrix)
+
+# === Step 2: Select top 1000 most variable genes ===
+gene_variances <- apply(vsd_df, 1, var)
+top_genes <- names(sort(gene_variances, decreasing = TRUE))[1:500]
+vsd_top <- vsd_df[top_genes, ]
+
+# === Step 3: Z-score scale by row ===
+vsd_top_scaled <- t(scale(t(vsd_top)))
+
+# === Step 4: Prepare column annotations (adjust this to your metadata) ===
+# Ensure rownames of metadata match colnames of vst matrix
+  # Replace with your actual sample ID column if needed
+annotation_col <- metadata[colnames(vsd_top_scaled), c( "Drug", "Concentration")]
+
+# === Step 5: Plot heatmap ===
+pheatmap(
+  vsd_top_scaled,
+  annotation_col = annotation_col,
+  cluster_rows = TRUE,
+  cluster_cols = TRUE,
+  show_rownames = FALSE,
+  fontsize_col = 8,
+  scale = "none",
+  color = colorRampPalette(c("blue", "white", "red"))(100),
+  main = "Top 500 Variable Genes (VST)"
+)
+```
+
+```{r}
+
+# creating a column with vsd matrix
+# Define a function to clean VST or expression matrix
+process_df <- function(expr_matrix, file_name) {
+  df <- as.data.frame(expr_matrix)
+  
+  ensembl_ids <- sub("\\..*", "", rownames(df))
+  gene_symbols <- mapIds(org.Hs.eg.db,
+                         keys = ensembl_ids,
+                         column = "SYMBOL",
+                         keytype = "ENSEMBL",
+                         multiVals = "first")
+  
+  df$symbol <- gene_symbols
+  df$ensembl_id <- ensembl_ids
+  
+  # Remove rows without symbol
+  df_clean <- df[!is.na(df$symbol), ]
+  
+  # Do NOT set rownames to symbol (to avoid duplicates)
+  # Keep original Ensembl IDs as rownames
+  rownames(df_clean) <- rownames(expr_matrix)[!is.na(gene_symbols)]
+  
+  write.csv(df_clean, file = file_name)
+  
+  return(df_clean)
+}
+
+
+cleaned_vsd <- process_df(vsd_matrix, "vsd_cleaned_with_symbols.csv")
+
+# creating heatmap with gene of interest
+genes_of_interest <- c("ASCL1", "NEUROD4", "YAP1","ZEB1","ITGB4")
+heatmap_data <- cleaned_vsd[cleaned_vsd$symbol %in% genes_of_interest, ]
+
+rownames(heatmap_data)<- heatmap_data$symbol
+expr_cols <- setdiff(colnames(heatmap_data), c("symbol", "ensembl_id", "gene_id"))
+heatmap_expr <- heatmap_data[, expr_cols]
+
+heatmap_scaled <- t(scale(t(heatmap_expr)))
+annotation_col <- metadata[colnames(heatmap_scaled), c( "Drug", "Concentration")]
+pheatmap(
+  heatmap_scaled,
+  annotation_col = annotation_col,
+  fontsize_row = 10,
+  fontsize_col = 8,
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  color = colorRampPalette(c("blue", "white", "red"))(100)
+)
+
 ```
