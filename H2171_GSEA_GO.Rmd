@@ -380,3 +380,75 @@ de_df <- df_list[[s]] %>%
 dev.off()
 ```
 
+# visualizing gsea results as whole
+```{r}
+# === 1. Prepare full GSEA result summary ===
+gsea_summary_all <- do.call(rbind, lapply(names(gsea_results), function(name) {
+  res_list <- list()
+  
+  for (source in c("GO", "KEGG")) {
+    gsea <- gsea_results[[name]][[source]]
+    
+    if (!is.null(gsea) && nrow(as.data.frame(gsea)) > 0) {
+      df <- as.data.frame(gsea)
+      df$Condition <- name
+      df$Source <- source
+      df <- df[, c("Condition", "Source", "ID", "Description", "p.adjust", "NES")]
+      res_list[[source]] <- df
+    }
+  }
+  
+  do.call(rbind, res_list)
+})) %>%
+  mutate(
+    NES = as.numeric(NES),
+    negLogPadj = -log10(p.adjust)
+  )
+
+# === 2. Top 5 Positively Enriched ===
+top_pos <- gsea_summary_all %>%
+  filter(NES > 0) %>%
+  filter(p.adjust<0.05) %>%
+  group_by(Condition, Source) %>%
+  slice_max(order_by = NES, n = 5, with_ties = FALSE) %>%
+  ungroup()
+
+# === 3. Top 5 Negatively Enriched ===
+top_neg <- gsea_summary_all %>%
+  filter(NES < 0) %>%
+   filter(p.adjust<0.05) %>%
+  group_by(Condition, Source) %>%
+  slice_min(order_by = NES, n = 5, with_ties = FALSE) %>%
+  ungroup()
+
+# === 4. Calculate global color scale limits ===
+min_logpadj <- min(c(top_pos$negLogPadj, top_neg$negLogPadj), na.rm = TRUE)
+max_logpadj <- max(c(top_pos$negLogPadj, top_neg$negLogPadj), na.rm = TRUE)
+
+# === 5. Updated plot function with locked color scale ===
+bubble_plot <- function(data, title) {
+  ggplot(data, aes(x = Condition, y = reorder(Description, negLogPadj))) +
+    geom_point(aes(size = abs(NES), color = negLogPadj)) +
+    scale_color_gradient(low = "blue", high = "red", limits = c(min_logpadj, max_logpadj)) +
+    labs(title = title,
+         x = "Condition", y = "Pathway",
+         size = "|NES|", color = "-log10(p.adjust)") +
+    theme_bw() +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1),
+      axis.text.y = element_text(size = 9)
+    )
+}
+
+# === 5. Individual Plots ===
+plot_go_pos <- bubble_plot(top_pos %>% filter(Source == "GO"), "Top Positively Enriched GO Terms")
+plot_kegg_pos <- bubble_plot(top_pos %>% filter(Source == "KEGG"), "Top Positively Enriched KEGG Pathways")
+plot_go_neg <- bubble_plot(top_neg %>% filter(Source == "GO"), "Top Negatively Enriched GO Terms")
+plot_kegg_neg <- bubble_plot(top_neg %>% filter(Source == "KEGG"), "Top Negatively Enriched KEGG Pathways")
+
+# === 6. Arrange 2x2 Grid ===
+(plot_go_pos | plot_kegg_pos) / 
+(plot_go_neg | plot_kegg_neg)
+
+
+```

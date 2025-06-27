@@ -280,7 +280,6 @@ pheatmap(
 ```
 
 ```{r}
-
 # creating a column with vsd matrix
 # Define a function to clean VST or expression matrix
 process_df <- function(expr_matrix, file_name) {
@@ -312,25 +311,55 @@ process_df <- function(expr_matrix, file_name) {
 cleaned_vsd <- process_df(vsd_matrix, "vsd_cleaned_with_symbols.csv")
 
 # creating heatmap with gene of interest
-genes_of_interest <- c("ASCL1", "NEUROD4", "YAP1","ZEB1","ITGB4")
+genes_of_interest <- c(
+  # YAP/TAZ core
+  "YAP1", "WWTR1",
+  # ECM Ligand
+  "SHC2", "GRB2", "THBS1","COL1A1","COL4A1","FN1",
+  # INTEGRIN ACTIVATION
+  "ITGA1", "ITGA2B", "ITGA4","ITGA7", "ITGA9", "ITGA6", "ITGB3","ITGB5",
+  # FAK, SRC
+  "PTK2", "GRB2","SRC",
+  #MAPK ACTIVATION
+  "KRAS","MAPK3","MAPK10","FOS","JUN","IL15","IL6R"
+)
 heatmap_data <- cleaned_vsd[cleaned_vsd$symbol %in% genes_of_interest, ]
 
 rownames(heatmap_data)<- heatmap_data$symbol
-expr_cols <- setdiff(colnames(heatmap_data), c("symbol", "ensembl_id", "gene_id"))
-heatmap_expr <- heatmap_data[, expr_cols]
 
+# Keep only non-duplicate symbols
+heatmap_data_unique <- heatmap_data[!duplicated(heatmap_data$symbol), ]
+
+# Reorder to match your gene list
+heatmap_data_ordered <- heatmap_data_unique[match(genes_of_interest, heatmap_data_unique$symbol), ]
+
+
+
+# Extract just the expression values
+expr_cols <- setdiff(colnames(heatmap_data_ordered), c("symbol", "ensembl_id"))
+heatmap_expr <- heatmap_data_ordered[, expr_cols]
+
+# Scale expression (row-wise)
 heatmap_scaled <- t(scale(t(heatmap_expr)))
-annotation_col <- metadata[colnames(heatmap_scaled), c( "Drug", "Concentration")]
+
+# Prepare sample annotation
+annotation_col <- metadata[colnames(heatmap_scaled), c("Drug", "Concentration")]
+
+# Draw heatmap
 pheatmap(
   heatmap_scaled,
   annotation_col = annotation_col,
   fontsize_row = 10,
   fontsize_col = 8,
-  cluster_rows = FALSE,
+  cluster_rows = FALSE,       # <- disables clustering
   cluster_cols = FALSE,
   show_rownames = TRUE,
   show_colnames = TRUE,
-  color = colorRampPalette(c("blue", "white", "red"))(100)
+  color = colorRampPalette(c("blue", "white", "red"))(100),
+  cellheight = 10,
+  border_color = "black"
 )
 
 ```
+
+
